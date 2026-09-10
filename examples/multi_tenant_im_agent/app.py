@@ -49,6 +49,7 @@ def create_app(
         close = getattr(service.runtime, "close", None)
         if close is not None:
             await close()
+        await asyncio.to_thread(service.repository.close)
 
     app = FastAPI(
         title="tRPC-Agent Multi-Tenant IM Gateway",

@@ -7,10 +7,10 @@ See the [Chinese quick start](./README.zh_CN.md) and the [full architecture and 
 ## Offline quick start
 
 ```powershell
-examples/multi_tenant_im_agent/scripts/run_offline_demo.ps1
+python examples/multi_tenant_im_agent/scripts/judge_demo.py
 ```
 
-Offline mode makes no model or IM network calls. Production mode creates a real tRPC-Agent `LlmAgent + Runner` per tenant and selects the configured Redis, SQL, or in-memory session service.
+The judge demo starts a real local HTTP gateway, creates a temporary database, runs signed Telegram and WeCom black-box callbacks, verifies idempotency, authentication, and metrics, then cleans everything up. It makes no model or IM network calls. Production mode creates a real tRPC-Agent `LlmAgent + Runner` per tenant and selects the configured Redis, SQL, or in-memory session service.
 
 In a second terminal, set the three local values from `.env.local.example` and run:
 

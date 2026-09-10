@@ -281,6 +281,11 @@ class ControlPlaneRepository:
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
 
+    def close(self) -> None:
+        """Release pooled database connections during graceful shutdown."""
+
+        self.engine.dispose()
+
     def sync_tenants(self, tenants: Iterable[TenantConfig]) -> None:
         """Idempotently seed public configuration; secret values are never stored."""
 

@@ -421,6 +421,23 @@ def test_environment_factory_runs_in_offline_mode(monkeypatch):
         assert client.get("/readyz").status_code == 200
 
 
+def test_app_lifespan_disposes_repository_engine(monkeypatch, repository):
+    service, _, _ = build_service(monkeypatch, repository)
+    monkeypatch.setenv("ADMIN_API_TOKEN", "admin-secret")
+    disposed = False
+    original_dispose = repository.engine.dispose
+
+    def record_dispose() -> None:
+        nonlocal disposed
+        disposed = True
+        original_dispose()
+
+    monkeypatch.setattr(repository.engine, "dispose", record_dispose)
+    with TestClient(create_app(service)) as client:
+        assert client.get("/readyz").status_code == 200
+    assert disposed
+
+
 def test_trace_context_does_not_swallow_application_import_error():
     with (
         pytest.raises(ImportError, match="application failure"),

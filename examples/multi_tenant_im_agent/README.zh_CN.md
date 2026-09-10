@@ -21,6 +21,18 @@
 
 离线模式不会调用模型和 IM 平台，适合验收路由、验签、幂等和审计：
 
+### 评委一键验收（推荐）
+
+安装项目依赖后，只需执行一条命令：
+
+```powershell
+python examples/multi_tenant_im_agent/scripts/judge_demo.py
+```
+
+脚本会自动选择本机端口、启动真实 HTTP Gateway、创建临时数据库、执行完整黑盒验收并清理进程和数据库。通过时会逐项输出 `[PASS]`，不需要模型 API Key、Telegram Bot 或企业微信账号，也不会访问外网。
+
+### 手工启动
+
 ```powershell
 examples/multi_tenant_im_agent/scripts/run_offline_demo.ps1
 ```
@@ -92,3 +104,4 @@ pytest examples/multi_tenant_im_agent/tests -q
 | `app.py` | Webhook、Admin API、探针和后台重试 |
 | `migrations/` | Alembic 版本化数据库迁移 |
 | `scripts/acceptance.py` | 已运行服务的黑盒验收 |
+| `scripts/judge_demo.py` | 自启动、自验收、自清理的一键评审演示 |
