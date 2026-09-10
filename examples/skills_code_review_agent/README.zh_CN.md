@@ -10,7 +10,7 @@
 - `run_checks.py`：在沙箱环境中对 diff 内容执行静态分析。支持高精度 AST 分析，并在语法不完整时回退为正则行匹配。
 
 ### 2. 沙箱隔离策略
-沙箱用于运行静态分析和检查脚本。系统支持 Docker 容器运行时 (`ContainerWorkspaceRuntime`) 作为默认的生产隔离环境，并支持本地工作区运行时 (`LocalWorkspaceRuntime`) 作为开发与测试的 Fallback 方案。沙箱执行受限于超时、内存限制和文件配额。
+当前原型通过本地子进程运行静态分析脚本，设置了 15 秒超时，但它不是安全沙箱，也不提供内存和文件配额隔离。命令行目前只支持 `local`；如需处理不可信代码，必须先接入框架的 `ContainerWorkspaceRuntime`、gVisor 等真正的隔离执行环境。
 
 ### 3. Filter 策略与安全边界
 前置拦截器 `FilterGovernance` 在脚本和命令进入沙箱执行前进行安全校验：

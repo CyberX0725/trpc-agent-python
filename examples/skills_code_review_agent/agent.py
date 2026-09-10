@@ -60,6 +60,11 @@ class CodeReviewAgent:
     Main Code Review Agent orchestrator.
     """
     def __init__(self, db_url: str = "sqlite:///review_agent.db", runtime_mode: str = "local", repo_path: str = "."):
+        if runtime_mode != "local":
+            raise NotImplementedError(
+                "The code-review prototype currently supports only the local runtime. "
+                "Use ContainerWorkspaceRuntime before enabling untrusted production workloads."
+            )
         self.db = ReviewDbRepository(db_url)
         self.filter = FilterGovernance()
         self.runtime_mode = runtime_mode
@@ -88,9 +93,11 @@ class CodeReviewAgent:
         return redacted
 
     def run_review(self, task_id: str, diff_file_path: str, fake_model: bool = True) -> Tuple[Dict[str, Any], str]:
+        # Metrics are task-scoped even when callers reuse one agent instance.
+        self.tool_call_count = 0
+        self.block_count = 0
         start_time = time.time()
         sandbox_time_ms = 0
-        findings = []
         filter_logs = []
         sandbox_runs = []
         exception_types = {}
@@ -127,9 +134,6 @@ class CodeReviewAgent:
             report_json, report_md = self.generate_reports(task_id, [], filter_logs, sandbox_runs, 0, start_time, status="INTERCEPTED")
             self.db.add_report(task_id, json.dumps(report_json), report_md, int((time.time() - start_time) * 1000))
             return report_json, report_md
-
-        with open(diff_file_path, "r", encoding="utf-8", errors="ignore") as f:
-            diff_content = f.read()
 
         # Set up sandbox files under a safe system temp directory to prevent directory traversal
         temp_dir = Path(tempfile.gettempdir())
@@ -452,7 +456,8 @@ def print_console_summary(report_json: dict):
             print(f"{'Severity':<10} | {'Category':<20} | {'File:Line':<25} | {'Title'}")
             print("-"*80)
             for f in findings:
-                print(f"{f['severity'].upper():<10} | {f['category']:<20} | {f'{f['file']}:{f['line']}':<25} | {f['title']}")
+                location = f"{f['file']}:{f['line']}"
+                print(f"{f['severity'].upper():<10} | {f['category']:<20} | {location:<25} | {f['title']}")
         else:
             print("No findings detected.")
         print("="*80)
@@ -462,7 +467,9 @@ if __name__ == "__main__":
     parser.add_argument("--diff-file", help="Path to unified diff file")
     parser.add_argument("--repo-path", help="Path to local repository")
     parser.add_argument("--fake-model", action="store_true", help="Use dry-run/fake model mode")
-    parser.add_argument("--runtime", default="local", choices=["local", "container"], help="Sandbox runtime mode")
+    parser.add_argument(
+        "--runtime", default="local", choices=["local"], help="Execution runtime (prototype: local only)"
+    )
     parser.add_argument("--db-url", default="sqlite:///review_agent.db", help="Database connection URL")
     args = parser.parse_args()
 

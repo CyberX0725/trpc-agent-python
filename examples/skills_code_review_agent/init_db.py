@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import sys
-import os
 from examples.skills_code_review_agent.db import Base, ReviewDbRepository
+
 
 def initialize_database(db_url: str = "sqlite:///review_agent.db"):
     """
-    Initializes the database schema by creating all required tables.
-    Also handles basic migration (dropping tables if requested via reset).
+    Initialize the development database schema by creating missing tables.
+
+    This is not a versioned migration system. ``--reset`` destructively drops
+    all prototype tables and is intended only for disposable local data.
     """
     print(f"Initializing database schema at: {db_url}")
     
@@ -19,9 +21,9 @@ def initialize_database(db_url: str = "sqlite:///review_agent.db"):
         print("Tables dropped.")
         
     repo = ReviewDbRepository(db_url)
-    print("Database tables successfully initialized/migrated.")
+    print("Database tables successfully initialized.")
     print("Tables created:")
-    for table_name in Base.metadata.tables.keys():
+    for table_name in Base.metadata.tables:
         print(f"  - {table_name}")
 
 if __name__ == "__main__":

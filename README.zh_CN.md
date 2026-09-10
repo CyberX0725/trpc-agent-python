@@ -465,6 +465,7 @@ skill_tool_set = SkillToolSet(repository=repository, run_tool_kwargs=tool_kwargs
 建议先看：
 
 - [examples/fastapi_server](./examples/fastapi_server/README.md) - HTTP 服务（同步 + SSE）
+- [examples/multi_tenant_im_agent](./examples/multi_tenant_im_agent/README.zh_CN.md) - 多租户 IM Agent 网关（Telegram / 企业微信、幂等、审计与部署）
 - [examples/a2a](./examples/a2a/README.md) / [examples/a2a_with_cancel](./examples/a2a_with_cancel/README.md) - A2A 服务与取消
 - [examples/agui](./examples/agui/README.md) / [examples/agui_with_cancel](./examples/agui_with_cancel/README.md) - AG-UI 服务与取消
 

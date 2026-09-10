@@ -10,7 +10,7 @@ The Code Review Agent uses a dedicated skill called `code-review` located under 
 - `run_checks.py`: Evaluates static analysis and AST checks on the code diff against rules.
 
 ### 2. Sandbox Isolation Strategy
-Sandbox execution runs static analysis scripts, parsers, and custom check rules on the target diff in an isolated environment. The framework supports Docker (`ContainerWorkspaceRuntime`) as the default sandbox, with a local workspace fallback (`LocalWorkspaceRuntime`) for testing/development. Code execution is constrained with timeouts, memory limits, and file quota limits.
+The current prototype runs its parser and checks in local subprocesses with a 15-second timeout. This is not a security sandbox and does not enforce memory or file quotas. The CLI therefore supports only `local`; untrusted production workloads must first integrate a real isolated runtime such as the framework's `ContainerWorkspaceRuntime` or gVisor.
 
 ### 3. Filter Strategy & Safety Boundaries
 The `FilterGovernance` policy manager runs checks on all commands prior to execution inside the sandbox:

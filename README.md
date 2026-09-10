@@ -494,6 +494,7 @@ This group helps you:
 Recommended first:
 
 - [examples/fastapi_server](./examples/fastapi_server/README.md) - HTTP service (sync + SSE)
+- [examples/multi_tenant_im_agent](./examples/multi_tenant_im_agent/README.md) - Multi-tenant IM Agent gateway (Telegram / WeCom, idempotency, audit, and deployment)
 - [examples/a2a](./examples/a2a/README.md) / [examples/a2a_with_cancel](./examples/a2a_with_cancel/README.md) - A2A service and cancellation
 - [examples/agui](./examples/agui/README.md) / [examples/agui_with_cancel](./examples/agui_with_cancel/README.md) - AG-UI service and cancellation
 
