@@ -1,5 +1,114 @@
 # Changelog
 
+## [1.1.20](https://github.com/trpc-group/trpc-agent-python/releases/tag/v1.1.20) (2026-09-01)
+
+### Features
+
+* A2A: Added A2A 1.0 support through the new `a2a-v1` optional extra and `trpc_agent_sdk.server.a2a_v1` package, including agent services, remote agents, Agent Card discovery, artifact-first streaming, task cancellation, and compatibility bridging for legacy A2A 0.3 peers. Existing A2A 0.3 integrations remain supported without code changes.
+* Memory: Added the optional Advanced Memory subsystem for file-backed long-term and session memory, including `AdvancedMemoryService`, `AdvancedMemorySessionService`, transcript persistence, structured session-memory extraction, memory freshness metadata, and `save_memory`, `read_memory`, and `list_memory_index` tools.
+* Memory: Added a staged context-management pipeline with bounded long-term-memory injection, oversized tool-result spill and preview, history trimming, micro-compaction, LLM-driven auto-compaction, token-aware context budgets, relevant-memory preloading, and cross-event-loop session coordination.
+* Runner: Added automatic binding and session-service wrapping when Advanced Memory services are supplied, allowing the Advanced Memory context pipeline to integrate through the existing `session_service` and `memory_service` interfaces.
+
+### Bug Fixes
+
+* Model: Fixed OpenAI 3.x with httpx 2.x raising stream-close errors after the SSE `[DONE]` marker in Chat Completions and Responses API streaming.
+
+### Docs
+
+* A2A: Added English and Chinese A2A 1.0 documentation and runnable examples for basic agents, multi-turn tool use, remote cancellation, and agent transfer.
+* Memory: Added an Advanced Memory example and comprehensive coverage for storage, transcripts, extraction, context budgeting, compaction, preload, and coordination behavior.
+
+### Internal
+
+* Memory: Reorganized Advanced Memory implementation modules behind a smaller public API and strengthened configuration validation while preserving lazy exports from the memory, session, and tools packages.
+
+## [1.1.19](https://github.com/trpc-group/trpc-agent-python/releases/tag/v1.1.19) (2026-08-21)
+
+Version bump to keep the `main` and `r0.1` branches in sync; carries forward the fixes already included in 1.1.18 (LLM streaming interruption span fixes and CI extension package installation).
+
+## [1.1.18](https://github.com/trpc-group/trpc-agent-python/releases/tag/v1.1.18) (2026-08-21)
+
+### Bug Fixes
+
+* Telemetry: Fixed `agent_run` and runner spans misreporting success with empty output when LLM streaming output was interrupted mid-stream (network interruption, model business error, or a retry-swallowed failure on a later turn after a tool call).
+  * Error responses no longer clear the partial text already streamed; the span is now marked as failed and the accumulated output is preserved with an `[INTERRUPTED]` prefix.
+  * In multi-turn runs, the interrupted text is appended after already-collected turn content instead of being dropped.
+  * The `call_llm` span's `llm_response` attribute now also backfills the already-streamed content when the retry layer converts a raised exception into a terminal error response.
+
+### Internal
+
+* CI: Added extension package installation to `pipeline_test/run_all_examples.sh` so the full set of examples can be run in CI.
+
+## [1.1.17](https://github.com/trpc-group/trpc-agent-python/releases/tag/v1.1.17) (2026-08-19)
+
+### Features
+
+* Telemetry: Langfuse export now preserves user-defined span attributes. Fields prefixed with `langfuse` are passed through as-is; other custom attributes are collected into metadata so teams can observe custom instrumentation alongside built-in trace data.
+
+### Bug Fixes
+
+* AG-UI: Fixed AGUI connections being closed too early when an `AgentNode` emitted an error `Event`. The server no longer sends `RunErrorEvent` immediately on the first error event; it waits until the final event carries an error after the agent run has finished. This allows agents such as `GraphAgent` to continue executing subsequent nodes instead of terminating the client connection prematurely.
+* Telemetry: Fixed four classes of span status and output loss during agent interruption or failure:
+  * Runner initialization failures now report error status through `trace_runner()` even when `InvocationContext` is not yet available (`invocation_context` is optional), while still writing the remaining runner business attributes.
+  * LLM call failures converted by the retry layer into `LlmResponse(error_code=...)` are no longer recorded as successful spans; trace reporting now checks `llm_response.error_code`.
+  * External cancellation via `asyncio.CancelledError` now marks the root invocation span as failed and preserves accumulated partial streamed text instead of leaving the span successful with missing output.
+  * `GeneratorExit` during generator shutdown now backfills partial streamed text into `agent_action`, preventing already emitted content from being lost when the client disconnects or the stream is closed early.
+
+### Internal
+
+* Build: Optimized installation speed for faster dependency setup and project bootstrap.
+
+## [1.1.16](https://github.com/trpc-group/trpc-agent-python/releases/tag/v1.1.16) (2026-08-11)
+
+### Features
+
+* Model: Added OpenAI Responses API support in `OpenAIModel`, including streaming, tool calls, and related adapter integration, so agents can use the Responses API alongside existing chat-completions flows.
+* Graph: Strengthened `GraphAgent` human-in-the-loop support and resume behavior, including clearer HITL event handling, checkpoint recovery, and AG-UI integration updates for interrupted graph runs.
+* Agent: Added configurable run limits for `LlmAgent` through `AgentRunLimits`, allowing callers to cap total turns, LLM calls, and tool calls and fail fast when a budget is exceeded.
+* Eval/Optimization: Added an evaluation-and-optimization closed loop, covering pipeline config validation, standardized evaluation, failure attribution, case diff analysis, gate/budget decisions, real optimizer write-back, atomic report publishing, audit indexing, and offline model / trace replay validation.
+* Examples: Added `examples/optimization/eval_optimize_loop` for the evaluation-optimization workflow and `examples/llmagent_with_limit` for demonstrating agent run limits.
+
+### Bug Fixes
+
+* Tools: Fixed `BashTool` whitelist validation so every executable segment in standalone commands, pipelines, and compound shell syntax (`;`, `&&`, `||`, newlines, background `&`) is checked. Heredoc bodies are treated as data, and unverifiable substitution syntax now fails closed.
+* Code Execution: Deferred `docker` and `python-magic` imports to first use, preventing import-time hangs or crashes on Windows and other environments without Docker Desktop or libmagic installed.
+* Telemetry: Fixed missing trace reporting when LLM calls are cancelled with `GeneratorExit` after a client disconnects during deployed service runs.
+* Eval/Optimization: Hardened report publishing, credential redaction, telemetry completeness, and config snapshot handling so optimization artifacts do not leak secrets or publish partial state.
+
+### Docs
+
+* Docs: Added English and Chinese documentation for OpenAI Responses API usage, GraphAgent HITL/resume behavior, and `LlmAgent` run-limit configuration.
+
+### Internal
+
+* CI: Optimized code-review prompt output to reduce blocking review noise.
+* CI: Improved full pipeline example execution coverage in `pipeline_test/run_all_examples.sh`.
+* Code Execution: Follow-up lazy-import fixes for Docker CLI helpers and content-type detection, including thread-safe magic probing and test compatibility updates.
+
+## [1.1.15](https://github.com/trpc-group/trpc-agent-python/releases/tag/v1.1.15) (2026-08-03)
+
+### Features
+
+* Tools: Added a Tool Script Safety Guard that scans Bash / Python scripts before execution and returns `allow` / `deny` / `needs_human_review`. It covers dangerous commands, sensitive path access, dependency installs, unknown network calls, and privilege escalation, and can be enabled on `BashTool`, local code executors, Skill, and MCP tool flows.
+* Tools: Added configurable safety policies, custom rule registration, JSONL audit logs, and telemetry attributes so teams can tune what to block, what to review, and how to observe safety decisions.
+* Testing: Added a Session / Memory / Summary multi-backend replay consistency framework. The same agent trajectories can be replayed on InMemory, SQLite, and optional Redis backends to compare events, state, memory, and summary results, with known SQLite summary drift reported instead of silently ignored.
+* Examples: Added a Skill-based code review agent example, including sandbox execution, review report generation, and policy filters for reviewing diffs / repositories more safely.
+* Examples: Added PostgreSQL storage support to the code review agent example, so review records can be persisted beyond the default SQLite backend.
+* Examples: Added pytest configuration and failure fallback handling for evaluation examples, making evaluation runs more resilient when individual cases fail.
+
+### Bug Fixes
+
+* Tools: Fixed `ToolSafetyFilter` only scanning the first non-empty script-like argument. It now scans all recognized fields such as `script` / `code` / `command` / `cmd` / `python_code` / `bash_code` / `code_blocks`, including mixed-language requests, so a safe earlier field can no longer hide a later dangerous command.
+* Tools: For unknown-language segments, keep running Bash rules but only merge Python findings when AST parsing succeeds. This avoids `PY_PARSE_ERROR_REVIEW` false positives that could block safe Bash scripts under strict review mode.
+* Model: Fixed Hunyuan hy3 conversations breaking the thinking chain when later turns omitted thinking content. Thinking text is now preserved when the model requires it for follow-up calls.
+* Model: Fixed tool calls being dropped when the model returned invalid JSON tool arguments. The SDK now tries `json_repair` first, and if repair fails it returns a parameter error to the agent instead of silently discarding the call.
+* Telemetry: Fixed missing traces for model retries and model call failures. Retry attempts and failure details are now recorded on the corresponding spans.
+
+### Docs
+
+* Docs: Added Tool Script Safety Guard design notes, policy examples, response schema examples, and a real-agent demo covering Tool / Skill / MCP / CodeExecutor allow-review-deny scenarios.
+* Docs: Expanded replay consistency README and implementation notes, including positive consistency checks and negative injection detection cases.
+
 ## [1.1.14](https://github.com/trpc-group/trpc-agent-python/releases/tag/v1.1.14) (2026-07-24)
 
 ### Features

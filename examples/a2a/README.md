@@ -1,6 +1,6 @@
 # A2A Agent 示例（Standard Protocol over HTTP）
 
-本示例演示如何通过标准 HTTP 运行 A2A 服务，并用远程客户端发起多轮对话。
+本示例演示如何通过标准 HTTP 运行 **a2a-sdk 0.3** A2A 服务，并用远程客户端发起多轮对话。
 
 ## 功能说明
 
@@ -11,33 +11,28 @@
 
 ## 环境要求
 
-- Python 3.12
-- 已安装项目依赖
+- Python3.10+，推荐 Python3.12
 
-## 运行步骤
-
-### 1. 安装依赖
+## 构建步骤
 
 ```bash
 git clone https://github.com/trpc-group/trpc-agent-python.git
 cd trpc-agent-python
-python3 -m venv .venv
+./build.sh "[a2a]"
 source .venv/bin/activate
-pip3 install -e '.[a2a]'
-pip3 install a2a-sdk python-dotenv
 ```
 
-### 2. 配置环境变量
+## 运行步骤
+
+### 配置环境变量
 
 在 [examples/a2a/.env](./.env) 中设置（也可通过 export）：
 
-```bash
-TRPC_AGENT_API_KEY=...
-TRPC_AGENT_BASE_URL=...
-TRPC_AGENT_MODEL_NAME=...
-```
+- `TRPC_AGENT_API_KEY`
+- `TRPC_AGENT_BASE_URL`
+- `TRPC_AGENT_MODEL_NAME`
 
-### 3. 启动服务端
+### 启动服务端
 
 ```bash
 cd examples/a2a
@@ -49,7 +44,7 @@ python3 run_server.py
 - API：`http://127.0.0.1:18081`
 - Agent Card：`http://127.0.0.1:18081/.well-known/agent.json`
 
-### 4. 启动客户端
+### 启动客户端
 
 新开终端执行：
 
@@ -124,7 +119,7 @@ Demo completed!
 
 | 文件 | 说明 |
 |---|---|
-| `run_server.py` | A2A 服务端入口（Starlette + Uvicorn） |
+| `run_server.py` | A2A 服务端入口（a2a-sdk 0.3，`A2AStarletteApplication`） |
 | `test_a2a.py` | A2A 客户端示例（3 轮对话） |
 | `agent/agent.py` | Agent 定义（LlmAgent + 天气工具） |
 | `agent/config.py` | 模型配置（从环境变量读取） |
@@ -132,6 +127,8 @@ Demo completed!
 | `agent/tools.py` | 天气查询工具（`get_weather_report`） |
 | `.env` | 环境变量配置文件 |
 
+a2a-sdk 1.x 示例见独立目录 [examples/a2a_v1](../a2a_v1/README.md)（`uv pip install -e '.[a2a-v1]'`）。两个 extra 不能同时安装。
+
 ## a2a 实现
 
-参考： [trpc_agent_sdk/server/a2a/README.md](../../trpc_agent_sdk/server/a2a/README.md)
+参考：[trpc_agent_sdk/server/a2a/README.md](../../trpc_agent_sdk/server/a2a/README.md)

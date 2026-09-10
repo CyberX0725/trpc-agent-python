@@ -1,6 +1,11 @@
 # TransferAgent 多 Agent 路由示例
 
-本示例演示如何使用 `TransferAgent` 包装外部远程 Agent（`TrpcRemoteA2aAgent`），并在主流程中将结果转交给下游分析 Agent，验证“远程能力接入 + 转交路由 + 二次加工输出”链路。
+本示例演示如何使用 `TransferAgent` 包装外部远程 Agent（`TrpcRemoteA2aAgent`），并在主流程中将结果转交给下游分析 Agent。两个 extra **不能同时安装**，对应不同入口文件：
+
+| extra | 入口 | Agent 组装 |
+|------|------|-----------|
+| `[a2a-v1]`（推荐，a2a-sdk 1.x） | `run_agent_v1.py` | `agent/agent_v1.py` |
+| `[a2a]`（a2a-sdk 0.3） | `run_agent.py` | `agent/agent.py` |
 
 ## 关键特性
 
@@ -22,10 +27,12 @@ root_agent (TransferAgent wrapper)
 
 关键文件：
 
-- [examples/transfer_agent/agent/agent.py](./agent/agent.py)：Agent 组装与 transfer 路由
-- [examples/transfer_agent/agent/prompts.py](./agent/prompts.py)：各 Agent 指令
-- [examples/transfer_agent/agent/tools.py](./agent/tools.py)：天气工具与转交工具
-- [examples/transfer_agent/run_agent.py](./run_agent.py)：运行入口与日志打印
+- [examples/transfer_agent/agent/agent_v1.py](./agent/agent_v1.py)：1.x Agent 组装（`trpc_agent_sdk.server.a2a_v1`）
+- [examples/transfer_agent/agent/agent.py](./agent/agent.py)：0.3 Agent 组装（`trpc_agent_sdk.server.a2a`）
+- [examples/transfer_agent/agent/prompts.py](./agent/prompts.py)：各 Agent 指令（两套入口共用）
+- [examples/transfer_agent/agent/tools.py](./agent/tools.py)：天气工具与转交工具（两套入口共用）
+- [examples/transfer_agent/run_agent_v1.py](./run_agent_v1.py)：1.x 运行入口
+- [examples/transfer_agent/run_agent.py](./run_agent.py)：0.3 运行入口
 
 ## 关键代码解释
 
@@ -44,23 +51,24 @@ root_agent (TransferAgent wrapper)
 - 运行日志按节点分段打印，便于确认每一步是否执行
 - 可直接判断“外部查询 -> 转交 -> 二次输出”的完整性
 
-## 环境与运行
+## 环境要求
 
-### 环境要求
+- Python3.10+，推荐 Python3.12
 
-- Python 3.12
-
-### 安装步骤
+## 构建步骤
 
 ```bash
 git clone https://github.com/trpc-group/trpc-agent-python.git
 cd trpc-agent-python
 python3 -m venv .venv
 source .venv/bin/activate
-pip3 install -e .
+uv pip install -e '.[a2a-v1]'   # 推荐：配合 run_agent_v1.py
+# uv pip install -e '.[a2a]'    # 0.3：配合 run_agent.py（与上一行不能同时装）
 ```
 
-### 环境变量要求
+## 运行步骤
+
+### 配置环境变量
 
 在 [examples/transfer_agent/.env](./.env) 中配置（或通过 `export`）：
 
@@ -75,22 +83,24 @@ pip3 install -e .
 默认推荐直接运行当前示例，脚本会自动检测并在需要时拉起本地 A2A 服务：
 
 ```bash
-# Terminal 1
+# Terminal 1（1.x，推荐）
 cd examples/transfer_agent
-python3 run_agent.py
+python3 run_agent_v1.py
+
+# 0.3：python3 run_agent.py
 ```
 
 如需手动启动远程服务（例如联调独立进程），可关闭自动拉起后按两终端方式运行：
 
 ```bash
-# Terminal 1
+# Terminal 1（1.x 用 examples/a2a_v1；0.3 用 examples/a2a）
 export TRPC_TRANSFER_AUTO_START_REMOTE_A2A=0
-cd examples/a2a
+cd examples/a2a_v1
 python3 run_server.py
 
 # Terminal 2
 cd examples/transfer_agent
-python3 run_agent.py
+python3 run_agent_v1.py
 ```
 
 ## 运行结果（实测）

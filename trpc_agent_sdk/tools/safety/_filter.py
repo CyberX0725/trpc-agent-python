@@ -25,7 +25,9 @@ from ._types import Decision
 from ._types import SafetyReport
 from ._types import ToolScriptScanRequest
 
-_SCRIPT_ARG_KEYS = ("script", "code", "command", "cmd", "python_code", "bash_code")
+_PYTHON_ARG_KEYS = ("python_code", )
+_BASH_ARG_KEYS = ("command", "cmd", "bash_code")
+_GENERIC_ARG_KEYS = ("script", )
 _LANGUAGE_ARG_KEYS = ("language", "lang")
 _COMMAND_ARGS_KEYS = ("command_args", "args", "argv")
 
@@ -60,20 +62,11 @@ class ToolSafetyFilter(BaseFilter):
         self._current_report.set(None)
         if not isinstance(req, dict):
             return None
-        script = _extract_script(req)
-        if not script:
-            return None
         tool_name = _extract_tool_name(req)
-        request = ToolScriptScanRequest(
-            script=script,
-            language=_extract_language(req, tool_name),
-            command_args=_extract_command_args(req),
-            cwd=str(req.get("cwd", "")),
-            env=dict(req.get("env", {}) or {}),
-            tool_name=tool_name,
-            tool_metadata=dict(req.get("tool_metadata", {}) or {}),
-        )
-        report = self.scanner.scan(request)
+        requests = _extract_scan_requests(req, tool_name)
+        if not requests:
+            return None
+        report = self.scanner.scan_segments(requests)
         should_block = report.decision == Decision.DENY or (self.block_on_review
                                                             and report.decision == Decision.NEEDS_HUMAN_REVIEW)
         report.set_blocked(should_block)
@@ -98,25 +91,58 @@ class ToolSafetyFilter(BaseFilter):
         return None
 
 
-def _extract_script(req: dict[str, Any]) -> str:
-    for key in _SCRIPT_ARG_KEYS:
-        value = req.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
+def _extract_scan_requests(req: dict[str, Any], tool_name: str) -> list[ToolScriptScanRequest]:
+    grouped_parts: dict[str, list[str]] = {}
+
+    for key in _PYTHON_ARG_KEYS:
+        _add_script_part(grouped_parts, "python", req.get(key))
+    for key in _BASH_ARG_KEYS:
+        _add_script_part(grouped_parts, "bash", req.get(key))
+
+    generic_language = _extract_language(req, tool_name)
+    for key in _GENERIC_ARG_KEYS:
+        _add_script_part(grouped_parts, generic_language, req.get(key))
+    code_language = _extract_explicit_language(req) or "python"
+    _add_script_part(grouped_parts, code_language, req.get("code"))
 
     code_blocks = req.get("code_blocks")
     if isinstance(code_blocks, list):
-        parts: list[str] = []
         for block in code_blocks:
             if isinstance(block, dict):
                 code = block.get("code", "")
+                language = block.get("language", "")
             else:
                 code = getattr(block, "code", "")
-            if isinstance(code, str) and code:
-                parts.append(code)
-        if parts:
-            return "\n".join(parts)
-    return ""
+                language = getattr(block, "language", "")
+            block_language = _canonical_language(language) if isinstance(language,
+                                                                         str) and language.strip() else generic_language
+            _add_script_part(grouped_parts, block_language, code)
+
+    command_args = _extract_command_args(req)
+    cwd = str(req.get("cwd", ""))
+    env = dict(req.get("env", {}) or {})
+    tool_metadata = dict(req.get("tool_metadata", {}) or {})
+    requests: list[ToolScriptScanRequest] = []
+    for language, parts in grouped_parts.items():
+        requests.append(
+            ToolScriptScanRequest(
+                script="\n".join(parts),
+                language=language,
+                command_args=command_args,
+                cwd=cwd,
+                env=env,
+                tool_name=tool_name,
+                tool_metadata=tool_metadata,
+            ))
+    return requests
+
+
+def _add_script_part(grouped_parts: dict[str, list[str]], language: str, value: Any) -> None:
+    if not isinstance(value, str) or not value.strip():
+        return
+    parts = grouped_parts.setdefault(_canonical_language(language), [])
+    if value not in parts:
+        parts.append(value)
 
 
 def _extract_tool_name(req: dict[str, Any]) -> str:
@@ -130,21 +156,33 @@ def _extract_tool_name(req: dict[str, Any]) -> str:
     return "unknown_tool"
 
 
-def _extract_language(req: dict[str, Any], tool_name: str) -> str:
+def _extract_explicit_language(req: dict[str, Any]) -> str:
     for key in _LANGUAGE_ARG_KEYS:
         value = req.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip().lower()
-    if isinstance(req.get("python_code"), str) or "code" in req:
-        return "python"
-    if isinstance(req.get("bash_code"), str) or "command" in req or "cmd" in req:
-        return "bash"
+            return _canonical_language(value)
+    return ""
+
+
+def _extract_language(req: dict[str, Any], tool_name: str) -> str:
+    explicit_language = _extract_explicit_language(req)
+    if explicit_language:
+        return explicit_language
     lowered_tool_name = tool_name.lower()
     if "python" in lowered_tool_name:
         return "python"
     if any(hint in lowered_tool_name for hint in ("bash", "shell", "sh")):
         return "bash"
     return "unknown"
+
+
+def _canonical_language(language: str) -> str:
+    normalized = (language or "unknown").strip().lower()
+    if normalized in {"py", "python3"}:
+        return "python"
+    if normalized in {"shell", "sh"}:
+        return "bash"
+    return normalized
 
 
 def _extract_command_args(req: dict[str, Any]) -> list[str]:

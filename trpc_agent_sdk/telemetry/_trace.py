@@ -107,11 +107,14 @@ def trace_runner(
     app_name: str,
     user_id: str,
     session_id: str,
-    invocation_context: InvocationContext,
+    invocation_context: Optional[InvocationContext] = None,
     new_message: Optional[Content] = None,
     last_event: Optional[Event] = None,
     state_begin: Optional[dict[str, Any]] = None,
     state_end: Optional[dict[str, Any]] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+    partial_text: Optional[str] = None,
 ):
     """Traces runner execution.
 
@@ -123,19 +126,30 @@ def trace_runner(
         user_id: The user ID of the session.
         session_id: The session ID of the session.
         invocation_context: The invocation context for the current agent run.
+            May be ``None`` when the runner fails before an invocation
+            context can be constructed (e.g. during initialization). In
+            that case, attributes that depend on it are skipped.
         new_message: The new message that started this invocation.
         last_event: The last non-streaming event from the agent execution.
         state_begin: The state before the runner execution.
         state_end: The state after the runner execution.
+        error_type: The error type when the runner does not complete normally.
+        error_message: The error message when the runner does not complete normally.
+        partial_text: Accumulated partial (streamed but not yet finalized) text.
+            Used as a fallback for the ``runner.output`` attribute when the
+            invocation was interrupted (e.g. GeneratorExit or an external
+            asyncio.CancelledError) before any non-streaming event existed,
+            so the already-streamed output is not silently lost.
     """
     span = trace.get_current_span()
     span.set_attribute("gen_ai.system", _trpc_agent_span_name)
     span.set_attribute("gen_ai.operation.name", "run_runner")
     span.set_attribute(f"{_trpc_agent_span_name}.runner.app_name", app_name)
-    span.set_attribute(
-        f"{_trpc_agent_span_name}.runner.name",
-        f"[trpc-agent]: {app_name}/{invocation_context.agent.name}",
-    )
+    if invocation_context is not None:
+        span.set_attribute(
+            f"{_trpc_agent_span_name}.runner.name",
+            f"[trpc-agent]: {app_name}/{invocation_context.agent.name}",
+        )
     span.set_attribute(f"{_trpc_agent_span_name}.runner.user_id", user_id)
     span.set_attribute(f"{_trpc_agent_span_name}.runner.session_id", session_id)
     input_str = ""
@@ -145,6 +159,14 @@ def trace_runner(
     output_str = ""
     if last_event and last_event.content and last_event.content.parts:
         output_str = _join_parts_with_thought_tag(last_event.content.parts)
+    if not output_str and partial_text:
+        # Fall back to the accumulated (but never finalized) partial text
+        # when the last non-streaming event has no renderable text (e.g. a
+        # function_response event has no `.text` parts) or there was no
+        # such event at all. This covers both a run interrupted before any
+        # non-partial event existed, and a later-turn interruption after an
+        # earlier turn already produced a tool call/response.
+        output_str = f"[INTERRUPTED]\n{partial_text}"
     span.set_attribute(f"{_trpc_agent_span_name}.runner.output", output_str)
 
     # Set state attributes for begin and end
@@ -153,6 +175,10 @@ def trace_runner(
 
     if state_end is not None:
         span.set_attribute(f"{_trpc_agent_span_name}.state.end", _safe_json_serialize(state_end))
+
+    if error_type:
+        span.set_status(trace.StatusCode.ERROR, error_message or error_type)
+        span.set_attribute("error.type", error_type)
 
 
 def trace_cancellation(
@@ -234,6 +260,8 @@ def trace_agent(
     agent_action: str = "",
     state_begin: Optional[dict[str, Any]] = None,
     state_end: Optional[dict[str, Any]] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
 ):
     """Traces agent execution.
 
@@ -246,6 +274,8 @@ def trace_agent(
                       (text, function calls, function responses).
         state_begin: The state before the agent run.
         state_end: The state after the agent run.
+        error_type: The error type when the agent does not complete normally.
+        error_message: The error message when the agent does not complete normally.
     """
     span = trace.get_current_span()
     span.set_attribute("gen_ai.system", _trpc_agent_span_name)
@@ -288,6 +318,10 @@ def trace_agent(
     if state_end is not None:
         span.set_attribute(f"{_trpc_agent_span_name}.state.end", _safe_json_serialize(state_end))
 
+    if error_type:
+        span.set_status(trace.StatusCode.ERROR, error_message or error_type)
+        span.set_attribute("error.type", error_type)
+
 
 def trace_tool_call(
     tool: BaseTool,
@@ -295,6 +329,8 @@ def trace_tool_call(
     function_response_event: Event,
     state_begin: Optional[dict[str, Any]] = None,
     state_end: Optional[dict[str, Any]] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
 ):
     """Traces tool call.
 
@@ -304,6 +340,8 @@ def trace_tool_call(
         function_response_event: The event with the function response details.
         state_begin: The state before the tool execution.
         state_end: The state after the tool execution.
+        error_type: The error type when the tool call does not complete normally.
+        error_message: The error message when the tool call does not complete normally.
     """
     span = trace.get_current_span()
     span.set_attribute("gen_ai.system", _trpc_agent_span_name)
@@ -351,6 +389,10 @@ def trace_tool_call(
 
     if state_end is not None:
         span.set_attribute(f"{_trpc_agent_span_name}.state.end", _safe_json_serialize(state_end))
+
+    if error_type:
+        span.set_status(trace.StatusCode.ERROR, error_message or error_type)
+        span.set_attribute("error.type", error_type)
 
 
 def trace_merged_tool_calls(
@@ -412,6 +454,8 @@ def trace_call_llm(
     instruction_metadata: Optional[InstructionMetadata] = None,
     stream_function_calls_raw: Optional[list[dict[str, Any]]] = None,
     stream_function_calls_post_planner: Optional[list[dict[str, Any]]] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
 ):
     """Traces a call to the LLM.
 
@@ -431,6 +475,8 @@ def trace_call_llm(
             raw LLM stream chunks.
         stream_function_calls_post_planner: Optional function calls collected
             from post-planner events emitted during stream processing.
+        error_type: The error type when the LLM call does not complete normally.
+        error_message: The error message when the LLM call does not complete normally.
     """
     span = trace.get_current_span()
     # Special standard Open Telemetry GenaI attributes that indicate
@@ -456,6 +502,19 @@ def trace_call_llm(
         f"{_trpc_agent_span_name}.llm_response",
         llm_response_json,
     )
+
+    # The caller-supplied error_type reflects an exception that propagated out
+    # of the model call. But the SDK-managed retry layer (retry_model_call)
+    # can also swallow a raised exception and yield a normal-looking
+    # LlmResponse with error_code/error_message set instead of re-raising
+    # (see models/_retry.py:_build_error_response). Fall back to inspecting
+    # llm_response.error_code so those calls are still marked as errors here.
+    effective_error_type = error_type or llm_response.error_code
+    effective_error_message = error_message or llm_response.error_message
+
+    if effective_error_type:
+        span.set_status(trace.StatusCode.ERROR, effective_error_message or effective_error_type)
+        span.set_attribute("error.type", effective_error_type)
 
     if stream_function_calls_raw:
         span.set_attribute(
@@ -517,8 +576,10 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
     """
     # Some fields in LlmRequest are function pointers and can not be serialized.
     result = {
-        "model": llm_request.model,
-        "config": llm_request.config.model_dump(exclude_none=True, exclude="response_schema"),
+        "model":
+        llm_request.model,
+        "config": (llm_request.config.model_dump(exclude_none=True, exclude="response_schema")
+                   if llm_request.config is not None else {}),
         "contents": [],
     }
     # We do not want to send bytes data to the trace.

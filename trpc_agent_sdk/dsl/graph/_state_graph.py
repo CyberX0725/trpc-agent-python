@@ -8,12 +8,14 @@
 This module provides StateGraph and CompiledStateGraph classes built on top
 of LangGraph with TRPC-Agent-specific features.
 """
+from __future__ import annotations
 
 import inspect
 from typing import Any
 from typing import Callable
 from typing import Hashable
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Type
 from typing import Union
 
@@ -27,9 +29,11 @@ from trpc_agent_sdk.agents import BaseAgent
 from trpc_agent_sdk.code_executors import BaseCodeExecutor
 from trpc_agent_sdk.context import InvocationContext
 from trpc_agent_sdk.models import LLMModel
-from trpc_agent_sdk.server.knowledge.tools import LangchainKnowledgeSearchTool
 from trpc_agent_sdk.tools import MCPToolset
 from trpc_agent_sdk.types import GenerateContentConfig
+
+if TYPE_CHECKING:
+    from trpc_agent_sdk.server.knowledge.tools import LangchainKnowledgeSearchTool
 
 from ._callbacks import NodeCallbackContext
 from ._callbacks import NodeCallbacks
@@ -48,6 +52,8 @@ from ._event_writer import AsyncEventWriter
 from ._event_writer import EventWriter
 from ._memory_saver import MemorySaver
 from ._memory_saver import MemorySaverOption
+from ._history import HistoryScope
+from ._history import resolve_history_scope
 from ._node_action import AgentNodeAction
 from ._node_action import CodeNodeAction
 from ._node_action import KnowledgeNodeAction
@@ -605,6 +611,7 @@ class StateGraph:
         config: Optional[NodeConfig] = None,
         callbacks: Optional[NodeCallbacks] = None,
         isolated_messages: bool = False,
+        history_scope: HistoryScope | None = None,
         input_from_last_response: bool = False,
         event_scope: Optional[str] = None,
         input_mapper: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
@@ -618,6 +625,9 @@ class StateGraph:
             config: Common NodeConfig for the node (optional)
             callbacks: Lifecycle callbacks for this node (optional)
             isolated_messages: If True, child execution does not inherit parent message history.
+            history_scope: Explicit history policy: none, branch, or all. An explicit
+                value takes precedence over isolated_messages. When omitted, the
+                legacy boolean keeps its existing behavior.
             input_from_last_response: If True, map parent STATE_KEY_LAST_RESPONSE to child STATE_KEY_USER_INPUT.
             event_scope: Optional branch scope segment for child agent events.
             input_mapper: Function to transform parent state to child state.
@@ -640,6 +650,10 @@ class StateGraph:
         """
         if agent is None:
             raise TypeError(f"Agent for node '{node_id}' must not be None.")
+        resolved_history_scope = resolve_history_scope(
+            history_scope,
+            isolated_messages=isolated_messages,
+        )
 
         if config is None:
             config = NodeConfig(name=node_id)
@@ -665,6 +679,7 @@ class StateGraph:
                 callback_ctx=callback_ctx,
                 callbacks=callbacks,
                 isolated_messages=isolated_messages,
+                history_scope=resolved_history_scope,
                 input_from_last_response=input_from_last_response,
                 event_scope=event_scope,
                 input_mapper=input_mapper,

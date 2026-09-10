@@ -30,7 +30,6 @@ from typing import Optional
 from ag_ui.core import BaseEvent
 from ag_ui.core import CustomEvent
 from ag_ui.core import EventType
-from ag_ui.core import RunErrorEvent
 from ag_ui.core import StateDeltaEvent
 from ag_ui.core import StateSnapshotEvent
 from ag_ui.core import TextMessageContentEvent
@@ -51,6 +50,7 @@ from trpc_agent_sdk.events import Event as TRPCEvent
 from trpc_agent_sdk.events import LongRunningEvent
 from trpc_agent_sdk.log import logger
 from trpc_agent_sdk.models import TOOL_STREAMING_ARGS
+from trpc_agent_sdk.dsl.graph import is_graph_internal_state_key
 
 
 class EventTranslator:
@@ -201,9 +201,17 @@ class EventTranslator:
             # Tool execution errors (with function_response) are recoverable: the error is already
             # passed back to the LLM as a tool result, so the LLM can retry or adjust its approach.
             # Only fatal errors (LLM failures, system errors) without function_response should
-            # emit RunErrorEvent to terminate the run.
+            # be surfaced as an error to the client.
+            #
+            # NOTE (deferred decision): We deliberately do NOT emit RunErrorEvent here. Per the
+            # AG-UI protocol, RunErrorEvent is terminal and compliant clients close the connection
+            # upon receiving it. However, most agent types (GraphAgent, ChainAgent, etc.) continue
+            # running after a sub-agent yields an error event, so terminating the connection here
+            # would desynchronize the client from the still-running backend. Instead, we surface the
+            # error as a CustomEvent, and the caller (who observes the full event stream) decides
+            # whether to emit RunErrorEvent or RunFinishedEvent once the run actually ends.
             if trpc_event.is_error() and not function_responses:
-                # Fatal system/LLM error - emit RunErrorEvent to terminate the run
+                # Fatal system/LLM error - surface it via CustomEvent instead of terminating the run
                 logger.error("Fatal error (non-recoverable), error_code=%s, error_message=%s", trpc_event.error_code,
                              trpc_event.error_message)
                 # Force close any streaming message before emitting error
@@ -211,12 +219,14 @@ class EventTranslator:
                     yield close_event
                 error_msg = (trpc_event.error_message or (trpc_event.custom_metadata or {}).get("error")
                              or "Unknown error")
-                yield RunErrorEvent(
-                    type=EventType.RUN_ERROR,
-                    message=error_msg,
-                    code=trpc_event.error_code or "MODEL_ERROR",
+                yield CustomEvent(
+                    type=EventType.CUSTOM,
+                    name="trpc_error",
+                    value={
+                        "code": trpc_event.error_code or "MODEL_ERROR",
+                        "message": error_msg,
+                    },
                 )
-                return
 
             # Handle custom events or metadata
             if trpc_event.custom_metadata:
@@ -599,9 +609,15 @@ class EventTranslator:
             A StateDeltaEvent
         """
         # Convert to JSON Patch format (RFC 6902)
-        # Use "add" operation which works for both new and existing paths
+        # Use "add" operation which works for both new and existing paths.
+        # GraphAgent-internal keys (``_trpc_graph_*``, e.g. the LangGraph
+        # checkpoint / interrupt markers) are never emitted to the client: they
+        # are backend continuation tokens, not client-facing state, and echoing
+        # them back would clobber the checkpoint.
         patches = []
         for key, value in state_delta.items():
+            if is_graph_internal_state_key(key):
+                continue
             patches.append({"op": "add", "path": f"/{key}", "value": value})
 
         timestamp_ms = int(timestamp * 1000)
@@ -621,8 +637,13 @@ class EventTranslator:
         Returns:
             A StateSnapshotEvent
         """
+        # Drop GraphAgent-internal keys (``_trpc_graph_*``) so the client
+        # snapshot only carries business state. Keeping them would leak backend
+        # continuation tokens and let the client echo them back to overwrite the
+        # checkpoint.
+        safe_snapshot = {key: value for key, value in state_snapshot.items() if not is_graph_internal_state_key(key)}
         timestamp_ms = int(timestamp * 1000)
-        return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=state_snapshot, timestamp=timestamp_ms)
+        return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=safe_snapshot, timestamp=timestamp_ms)
 
     async def force_close_streaming_message(self) -> AsyncGenerator[BaseEvent, None]:
         """Force close any open streaming message.

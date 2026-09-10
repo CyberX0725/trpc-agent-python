@@ -46,6 +46,7 @@ from trpc_agent_sdk.agents import BaseAgent
 from trpc_agent_sdk.configs import RunConfig as TRPCRunConfig
 from trpc_agent_sdk.events import EventTranslatorBase
 from trpc_agent_sdk.events import LongRunningEvent
+from trpc_agent_sdk.exceptions import RunLimitException
 from trpc_agent_sdk.log import logger
 from trpc_agent_sdk.abc import ToolSetABC
 from trpc_agent_sdk.memory import BaseMemoryService
@@ -53,6 +54,7 @@ from trpc_agent_sdk.memory import InMemoryMemoryService
 from trpc_agent_sdk.runners import Runner
 from trpc_agent_sdk.sessions import BaseSessionService
 from trpc_agent_sdk.sessions import InMemorySessionService
+from trpc_agent_sdk.dsl.graph import is_graph_internal_state_key
 from trpc_agent_sdk.tools import LongRunningFunctionTool
 from trpc_agent_sdk.types import Content
 
@@ -918,7 +920,7 @@ class AgUiAgent:
             logger.debug("Finished iterating over _stream_events for execution %s", execution.thread_id)
 
             # If we found tool calls, add them to session state BEFORE cleanup
-            if has_tool_calls:
+            if has_tool_calls and not has_error:
                 app_name = self.get_app_name(input)
                 user_id = self.get_user_id(input)
                 for tool_call_id in tool_call_ids:
@@ -1102,11 +1104,22 @@ class AgUiAgent:
             # Ensure session exists
             await self._ensure_session_exists(app_name, user_id, input.thread_id, input.state)
 
-            # this will always update the backend states with the frontend states
-            # Recipe Demo Example: if there is a state "salt" in the ingredients state and in frontend user
-            # remove this salt state using UI from the ingredients list then our backend should also update
-            # these state changes as well to sync both the states
-            await self._session_manager.update_session_state(input.thread_id, app_name, user_id, input.state)
+            # Always synchronise the client-supplied state so UI-driven edits
+            # (e.g. the Recipe Demo removing an ingredient from the list) reach
+            # the backend for both normal turns and HITL tool-result rounds.
+            # GraphAgent-internal keys (``_trpc_graph_*``, e.g. the checkpoint /
+            # interrupt markers) are stripped first: they are never emitted to
+            # the client, so any occurrence here is a stale echo that must not
+            # overwrite the live checkpoint and restart the graph.
+            await self._session_manager.update_session_state(
+                input.thread_id,
+                app_name,
+                user_id,
+                {
+                    key: value
+                    for key, value in (input.state or {}).items() if not is_graph_internal_state_key(key)
+                },
+            )
 
             # Convert messages
             # only use this new_message if there is no tool response from the user
@@ -1228,10 +1241,18 @@ class AgUiAgent:
                 return
 
             # Run TRPC agent
+            # Track whether the last observed trpc_event was a fatal (non-recoverable) error, so
+            # that once the stream ends we know whether the run actually terminated due to an
+            # error or completed normally. We can't emit RunErrorEvent as soon as we see an error
+            # event mid-stream because most agent types (GraphAgent, ChainAgent, etc.) continue
+            # running after a sub-agent yields an error event, and RunErrorEvent is terminal per
+            # the AG-UI protocol - compliant clients close the connection upon receiving it.
+            last_event_is_error = False
             async for trpc_event in runner.run_async(user_id=user_id,
                                                      session_id=input.thread_id,
                                                      new_message=new_message,
                                                      run_config=run_config):
+                last_event_is_error = trpc_event.is_error() and not trpc_event.get_function_responses()
                 if not isinstance(trpc_event, LongRunningEvent):
                     # Check if custom translator should handle this event
                     if self._custom_event_translator and self._custom_event_translator.need_translate(trpc_event):
@@ -1268,11 +1289,36 @@ class AgUiAgent:
                 current_timestamp = datetime.now().timestamp()
                 ag_ui_event = event_translator._create_state_snapshot_event(final_state, current_timestamp)
                 await event_queue.put(ag_ui_event)
+
+            # The run ended - decide whether it finished normally or terminated due to an error
+            # based on whether the last trpc_event observed was an error. `trpc_event` still
+            # refers to the last event yielded by the loop above.
+            if last_event_is_error:
+                error_msg = (trpc_event.error_message or (trpc_event.custom_metadata or {}).get("error")
+                             or "Unknown error")
+                logger.error("Run for thread %s ended with a fatal error as its last event: %s", input.thread_id,
+                             error_msg)
+                await event_queue.put(
+                    RunErrorEvent(
+                        type=EventType.RUN_ERROR,
+                        message=error_msg,
+                        code=trpc_event.error_code or "MODEL_ERROR",
+                    ))
             # Signal completion - TRPC execution is done
             logger.debug("Background task sending completion signal for thread %s", input.thread_id)
             await event_queue.put(None)
             logger.debug("Background task completion signal sent for thread %s", input.thread_id)
 
+        except RunLimitException as ex:
+            logger.warning("AG-UI run %s exceeded a configured run limit: %s", input.run_id, ex)
+            async for ag_ui_event in event_translator.force_close_streaming_message():
+                await event_queue.put(ag_ui_event)
+            await event_queue.put(RunErrorEvent(
+                type=EventType.RUN_ERROR,
+                message=str(ex),
+                code=ex.error_code,
+            ))
+            await event_queue.put(None)
         except Exception as ex:  # pylint: disable=broad-except
             logger.error("Background execution error: %s", ex, exc_info=True)
             # Put error in queue

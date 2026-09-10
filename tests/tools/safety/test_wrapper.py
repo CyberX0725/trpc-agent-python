@@ -246,6 +246,137 @@ async def test_filter_extracts_command_as_bash():
 
 
 @pytest.mark.asyncio
+async def test_filter_scans_all_script_like_fields():
+    safety_filter = ToolSafetyFilter()
+    result = FilterResult()
+
+    await safety_filter._before(
+        None,
+        {
+            "script": "echo ok",
+            "command": "rm -rf /",
+            "language": "bash",
+            "tool_name": "shell_tool",
+        },
+        result,
+    )
+
+    assert result.is_continue is False
+    assert result.rsp["decision"] == "deny"
+    assert any(finding["rule_id"] == "BASH_RECURSIVE_DELETE" for finding in result.rsp["findings"])
+
+
+@pytest.mark.asyncio
+async def test_filter_scans_mixed_language_fields_without_language():
+    safety_filter = ToolSafetyFilter()
+    result = FilterResult()
+
+    await safety_filter._before(
+        None,
+        {
+            "code": "print('ok')",
+            "command": "rm -rf /",
+            "tool_name": "mixed_tool",
+        },
+        result,
+    )
+
+    assert result.is_continue is False
+    assert result.rsp["language"] == "mixed"
+    assert result.rsp["decision"] == "deny"
+    assert any(finding["rule_id"] == "BASH_RECURSIVE_DELETE" for finding in result.rsp["findings"])
+    assert all(finding["rule_id"] != "PY_PARSE_ERROR_REVIEW" for finding in result.rsp["findings"])
+
+
+@pytest.mark.asyncio
+async def test_filter_allows_safe_mixed_language_fields_in_strict_mode():
+    safety_filter = ToolSafetyFilter(block_on_review=True)
+    result = FilterResult()
+
+    await safety_filter._before(
+        None,
+        {
+            "code": "print('ok')",
+            "command": "echo ok",
+            "tool_name": "mixed_tool",
+        },
+        result,
+    )
+
+    assert result.is_continue is True
+    assert result.rsp["language"] == "mixed"
+    assert result.rsp["decision"] == "allow"
+    assert all(finding["rule_id"] != "PY_PARSE_ERROR_REVIEW" for finding in result.rsp["findings"])
+
+
+@pytest.mark.asyncio
+async def test_filter_scans_execution_context_once_for_mixed_fields():
+    safety_filter = ToolSafetyFilter()
+    result = FilterResult()
+
+    await safety_filter._before(
+        None,
+        {
+            "python_code": "print('ok')",
+            "command": "echo ok",
+            "tool_metadata": {
+                "timeout": 301
+            },
+            "tool_name": "mixed_tool",
+        },
+        result,
+    )
+
+    matching_findings = [
+        finding for finding in result.rsp["findings"] if finding["rule_id"] == "RESOURCE_TIMEOUT_LIMIT_EXCEEDED"
+    ]
+    assert result.rsp["language"] == "mixed"
+    assert result.rsp["decision"] == "needs_human_review"
+    assert len(matching_findings) == 1
+    assert result.rsp["telemetry_attributes"]["tool.safety.scan_id"] == result.rsp["scan_id"]
+
+
+@pytest.mark.asyncio
+async def test_filter_deduplicates_findings_across_segments():
+    safety_filter = ToolSafetyFilter()
+    result = FilterResult()
+
+    await safety_filter._before(
+        None,
+        {
+            "command": "rm -rf /",
+            "script": "rm -rf /",
+            "tool_name": "custom",
+        },
+        result,
+    )
+
+    matching_findings = [finding for finding in result.rsp["findings"] if finding["rule_id"] == "BASH_RECURSIVE_DELETE"]
+    assert result.rsp["decision"] == "deny"
+    assert len(matching_findings) == 1
+    assert all(finding["rule_id"] != "PY_PARSE_ERROR_REVIEW" for finding in result.rsp["findings"])
+
+
+@pytest.mark.asyncio
+async def test_filter_allows_safe_unknown_bash_script_in_strict_mode():
+    safety_filter = ToolSafetyFilter(block_on_review=True)
+    result = FilterResult()
+
+    await safety_filter._before(
+        None,
+        {
+            "script": "git status",
+            "tool_name": "custom",
+        },
+        result,
+    )
+
+    assert result.is_continue is True
+    assert result.rsp["decision"] == "allow"
+    assert all(finding["rule_id"] != "PY_PARSE_ERROR_REVIEW" for finding in result.rsp["findings"])
+
+
+@pytest.mark.asyncio
 async def test_filter_extracts_python_code_language():
     safety_filter = ToolSafetyFilter()
     result = FilterResult()

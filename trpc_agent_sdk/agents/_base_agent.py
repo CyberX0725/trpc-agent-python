@@ -21,6 +21,7 @@ Classes:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import abstractmethod
 from functools import partial
@@ -33,6 +34,8 @@ from typing import Union
 from typing import final
 from typing_extensions import override
 
+from opentelemetry import trace
+
 from trpc_agent_sdk.abc import AgentABC
 from trpc_agent_sdk.abc import FilterType
 from trpc_agent_sdk.code_executors import BaseCodeExecutor
@@ -41,8 +44,12 @@ from trpc_agent_sdk.context import create_agent_context
 from trpc_agent_sdk.context import reset_invocation_ctx
 from trpc_agent_sdk.context import set_invocation_ctx
 from trpc_agent_sdk.events import Event
+from trpc_agent_sdk.exceptions import RunLimitException
 from trpc_agent_sdk.filter import get_filter
 from trpc_agent_sdk.filter import run_stream_filters
+from trpc_agent_sdk.telemetry import report_invoke_agent
+from trpc_agent_sdk.telemetry import tracer
+from trpc_agent_sdk.telemetry import trace_agent
 
 from ._callback import AgentCallback
 from ._callback import AgentCallbackFilter
@@ -213,6 +220,7 @@ class BaseAgent(AgentABC):
     def _create_invocation_context(self, parent_context: InvocationContext) -> InvocationContext:
         """Creates a new invocation context for this agent."""
         invocation_context = parent_context.model_copy(update={"agent": self})
+        invocation_context._reset_run_limit_observed()
 
         # Handle branch assignment:
         # - If parent_context.agent is the same as self, we're being called from runner
@@ -256,10 +264,6 @@ class BaseAgent(AgentABC):
                 - State changes
                 - Actions
         """
-        from trpc_agent_sdk.telemetry import report_invoke_agent
-        from trpc_agent_sdk.telemetry import tracer
-        from trpc_agent_sdk.telemetry import trace_agent
-
         # Manually propagate span context using attach/detach instead of
         # start_as_current_span. This ensures child spans (call_llm, execute_tool,
         # etc.) can correctly resolve their parent.
@@ -267,7 +271,7 @@ class BaseAgent(AgentABC):
         # because __aexit__ of the context manager is not guaranteed to run when
         # an async generator is cancelled, but try/finally always executes
         # even under CancelledError (PEP 492).
-        with tracer.start_as_current_span(f"agent_run [{self.name}]"):
+        with tracer.start_as_current_span(f"agent_run [{self.name}]") as agent_span:
             ctx = self._create_invocation_context(parent_context)
             if ctx.agent_context is None:
                 ctx.agent_context = create_agent_context()
@@ -280,37 +284,107 @@ class BaseAgent(AgentABC):
             # Track all non-partial events for building action trace
             non_partial_events = []
 
+            # Track accumulated partial text as it streams in (mirrors the
+            # pattern used by LlmProcessor.call_llm_async's
+            # _build_interrupted_content). If GeneratorExit/CancelledError
+            # fires before any non-partial event exists, non_partial_events
+            # is empty and _build_action_string_from_events([]) would
+            # otherwise produce "", silently dropping everything that was
+            # already streamed to the caller.
+            partial_text_parts: list[str] = []
+
             mono_start = time.monotonic()
             t_first_visible: Optional[float] = None
-            metrics_error_type: Optional[str] = None
+            error_type: Optional[str] = None
+            error_message: Optional[str] = None
+            interrupted_partial_text: Optional[str] = None
 
             try:
                 gen_co = run_stream_filters(ctx.agent_context, None, self.filters, handle)  # type: ignore
                 async for event in gen_co:
                     if t_first_visible is None and event.has_content():
                         t_first_visible = time.monotonic()
-                    if not event.partial and event.content is not None:
-                        # Collect non-partial events with content for tracing
-                        # This excludes state update events which have content=None
-                        non_partial_events.append(event)
+                    if event.partial:
+                        if event.content and event.content.parts:
+                            for part in event.content.parts:
+                                if part.text:
+                                    partial_text_parts.append(part.text)
+                    elif event.is_error():
+                        # A mid-stream error event (e.g. the SDK-managed
+                        # retry layer swallowing a raised exception into a
+                        # terminal error LlmResponse) does not supersede the
+                        # partial text already streamed to the caller -
+                        # there is no successful final content to take over
+                        # from. Preserve it as a fallback for agent_action
+                        # instead of clearing it, and surface the error so
+                        # the span isn't misreported as a successful run
+                        # with empty output.
+                        if partial_text_parts:
+                            interrupted_partial_text = "".join(partial_text_parts)
+                        error_type = event.error_code
+                        error_message = event.error_message
+                    else:
+                        # A non-partial event finalizes this turn's output;
+                        # any partial text accumulated so far has now been
+                        # superseded by it, so drop it to avoid duplicating
+                        # output already captured in non_partial_events.
+                        partial_text_parts.clear()
+                        if event.content is not None:
+                            # Collect non-partial events with content for tracing
+                            # This excludes state update events which have content=None
+                            non_partial_events.append(event)
                     yield event  # type: ignore
+            except GeneratorExit:
+                error_type = "AgentGeneratorExit"
+                error_message = "Agent execution stopped with GeneratorExit."
+                interrupted_partial_text = "".join(partial_text_parts)
+                raise
+            except asyncio.CancelledError:
+                # Like GeneratorExit, asyncio.CancelledError subclasses
+                # BaseException, not Exception, so it is not caught by
+                # `except Exception` below. External cancellation
+                # (task.cancel(), asyncio.wait_for() timeout, ASGI
+                # disconnect) surfaces here as this exception; salvage the
+                # partial text the same way as the GeneratorExit branch.
+                error_type = "AgentCancelledError"
+                error_message = "Agent execution stopped with asyncio.CancelledError."
+                interrupted_partial_text = "".join(partial_text_parts)
+                raise
+            except RunLimitException as ex:
+                error_type = ex.error_code
+                error_message = str(ex)
+                raise
             except Exception as ex:
-                metrics_error_type = type(ex).__name__
+                error_type = type(ex).__name__
+                error_message = str(ex)
                 raise
             finally:
                 # Compute state after agent run
                 state_end = dict(ctx.session.state)
 
-                # Build formatted action string from all non-partial events
+                # Build formatted action string from all non-partial events.
+                # Append the accumulated (but never finalized) partial text
+                # when the run was interrupted mid-stream, so streamed
+                # output is not silently lost. This can happen even after
+                # earlier non-partial events already exist (e.g. a tool
+                # call/response from turn 1 of a multi-turn run), in which
+                # case the interrupted text from a later turn is appended
+                # rather than replacing the already-collected action string.
                 agent_action = _build_action_string_from_events(non_partial_events)
+                if interrupted_partial_text:
+                    interrupted_str = f"[INTERRUPTED]\n{interrupted_partial_text}"
+                    agent_action = f"{agent_action}\n\n{interrupted_str}" if agent_action else interrupted_str
 
                 # Call trace function with agent execution details
-                trace_agent(
-                    invocation_context=ctx,
-                    agent_action=agent_action,
-                    state_begin=state_begin,
-                    state_end=state_end,
-                )
+                with trace.use_span(agent_span, end_on_exit=False):
+                    trace_agent(
+                        invocation_context=ctx,
+                        agent_action=agent_action,
+                        state_begin=state_begin,
+                        state_end=state_end,
+                        error_type=error_type,
+                        error_message=error_message,
+                    )
 
                 duration_s = time.monotonic() - mono_start
                 ttft_s = (t_first_visible - mono_start) if t_first_visible is not None else duration_s
@@ -323,7 +397,7 @@ class BaseAgent(AgentABC):
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     is_stream=is_stream,
-                    error_type=metrics_error_type,
+                    error_type=error_type,
                 )
 
                 # avoid memory leak
